@@ -2,4 +2,6 @@ This simple module will overwrite the argv arguments of any C program process. T
 
 You have to pass the PID of the process you want to write to when insmod'ing the module, eg. insmod noargv.ko PID=x
 
-I don't know how safe the module is, we write 1024 bytes into the process stack and I believe some data might get corrupted. That is because the address of `argv` doesn't match the address of `mm->arg_start`, so I just said f it and wrote 1024 bytes of X.
+I don't know how safe the module is, we write 1024 bytes into the process stack and I believe some data might get corrupted, such as environment variables. The address of args.start_addr match exactly to the start address of argv[0], but maybe kmap might change a little bit the address to make it page-aligned (maybe). so I just said f it and wrote 1024 bytes of X. 1024 bytes is more than enough to overwrite most of the arguments you pass to argv, including comm.
+
+This is pretty simple, not a big deal. Maybe in the future I will add some options that will allow you to overwrite the values with a predefined values, that you will pass to insmod. Who knows.. As for now, it's pretty cool. I learned a few things about the kernel in the process.
