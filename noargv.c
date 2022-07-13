@@ -22,9 +22,7 @@ struct args {
 /* 
   * Overwrite the arguments, we write BLOCK_SIZE_X to the stack, \
     * starting from args.start_addr (This might not be accurate due to kmap).
-  * I know it's a little risky to fill BLOCK_SIZE_X bytes of the stack with Xs, but \
-    * args.start_addr doesn't point exactly to argv that's why we have to write a little \ 
-        * bit more to hit argv.
+  * I know it's a little risky to fill BLOCK_SIZE_X bytes of the stack with Xs.
 */
 int exploit(struct mm_struct *mm, struct args args)
 {
