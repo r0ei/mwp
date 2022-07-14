@@ -36,7 +36,7 @@ static int vp_ow(struct mm_struct *mm, u64 dest_addr, const char *dest, const ch
     ret = get_user_pages_remote(mm, dest_addr, NR_PAGES, FOLL_FORCE | FOLL_WRITE, &p, NULL, NULL);
     if (unlikely(ret <= 0))
         return -EFAULT;
-    mmap_read_lock(mm);
+    mmap_read_unlock(mm);
 
     kvaddr = kmap(p); /* Map the page(s), and return a kernel space virtual address of the mapping */
 
