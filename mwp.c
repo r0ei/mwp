@@ -1,137 +1,143 @@
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/string.h>
-#include <linux/highmem.h>
-#include <linux/slab.h>
 #include <linux/pid.h>
 
 #include "mwp.h"
 
-char *dest;
-char *src;
-static int DEBUG;
+struct task_struct *pid_task_struct;
+struct vp_sections_struct vps;
+struct proc_dir_entry *pde; /* Proc directory */
+struct mm_struct *pid_mm;
+struct process_info pinfo;
+
 static int PID;
+
 module_param(PID, int, 0);
-module_param(DEBUG, int, 0);
-module_param(dest, charp, 0);
-module_param(src, charp, 0);
-MODULE_PARM_DESC(DEBUG, "DEBUG=1 will log debug information, you can view it with dmesg");
 MODULE_PARM_DESC(PID, "The ID of the process you want to mess with.");
-MODULE_PARM_DESC(dest, "The string that should be written to src");
-MODULE_PARM_DESC(src, "The string in memory that you want to overwrite");
 
-/* 
-  * Overwrite desc with src, we loop BLOCK_SIZE_X over the stack, \
-  * starting from dest_addr. */
-static int vp_ow(struct mm_struct *mm, u64 dest_addr, const char *dest, const char *src)
+/* Set up the unique global struct for use */
+inline void init_pinfo_struct(void)
 {
-    int i;
-    int ret;
-    void *kvaddr;
-    struct page *p = NULL;
+    spin_lock_init(&pinfo.pwlock);
+    pinfo.pid = PID;
+    pinfo.usage_count = 0;
+    pinfo.nrdwr = 0;
+}
 
-    /* Pin the pages into memory */
-    mmap_read_lock(mm);
-    ret = get_user_pages_remote(mm, dest_addr, NR_PAGES, FOLL_FORCE | FOLL_WRITE, &p, NULL, NULL);
-    if (unlikely(ret <= 0))
-        return -EFAULT;
-    mmap_read_unlock(mm);
-
-    kvaddr = kmap(p); /* Map the page(s), and return a kernel space virtual address of the mapping */
-
-    if (DEBUG)
-        pr_info("[I] Writing to kernel space mapped address: %p\n", kvaddr);
-    
-    for (i = 0; i < BLOCK_SIZE_X; i++)
-        if (strcmp((char *)kvaddr + i, dest) == 0)
-            memcpy(kvaddr + i, src, strlen(src));
-
-    if (DEBUG)
-        pr_info("[Y] Argument %s has been successfully overwritten to %s!\n", dest, src);
-
-    /* No need to check for errors, this is unlikely to fail */
-    kunmap(p);
-    set_page_dirty(p); /* Mark page as dirty */
-    put_page(p); /* Return the page */
-
+/* Simply increment the usage count, nothing else */
+int mwp_p_open(struct inode *inode, struct file *file)
+{
+    incusage();
     return 0;
 }
 
-/* Return the exact address of name within the process address space */
-static u64 vp_fetch_addr(struct mm_struct *mm, struct task_struct *ts, struct vp_sections_struct vps, const char *name)
+/* Echo out process information stored in struct process_info */
+ssize_t mwp_p_read(struct file *file, char __user *buf, size_t len, loff_t *offset)
 {
-    int i = 0;
-    char *kvbuf;
-    int fetched = 0;
-    unsigned long slength = vps.args.end_args - vps.args.start_args;
-    
-    if (!(kvbuf = kmalloc(BUF_SIZE, GFP_KERNEL)))
-        return -EFAULT;
+    int ret = 0;
+    char buffer[BUF_SIZE];
 
-    /* Loop until the desired string is found */
-    while (fetched == 0) {
-        if (i == BLOCK_SIZE_X)
-            break; /* We reached the limit, can't loop anymore */
-        access_process_vm(ts, vps.args.start_args + i, kvbuf, slength, FOLL_FORCE);
-        i++;
-        if (strcmp(kvbuf, name) == 0)
-            fetched = 1; } /* Stop if we found the desired string in memory */
+    snprintf(buffer, BUF_SIZE, "PID: %d: Usage count: %d, I/O Operations: %d\n",
+                pinfo.pid, pinfo.usage_count, pinfo.nrdwr);
 
-    kfree(kvbuf);
-
-    if (fetched == 0)
+    /* Not a really good check; the number of bytes read is returned, or negative for error \ 
+        As you see I'd rather check only for errors */
+    if ((ret = simple_read_from_buffer(buf, len, offset, buffer, strlen(buffer) + 1)) < 0)
         return -EAGAIN;
-    return vps.args.start_args + i;
+
+    incrdwr();   
+    return ret;
 }
 
-/* Copy the user-space program arguments addresses into our variables */
+/* Write dest to src, the user should echo to the proc entry following this pattern \
+    e.g. echo "./main ./nomain" > /proc/proc_entry */
+ssize_t mwp_p_write(struct file *file, const char __user *buf, size_t len, loff_t *offset)
+{
+    u64 vkaddr;
+    char *input;
+    char *dest = NULL, *src = NULL;
+
+    /* Allocate enough memory for the user-length buffer */
+    if ((input = kmalloc(len, GFP_KERNEL)) == NULL)
+        return -EFAULT;
+    /* Copy user-space buffer to our local kernel one */
+    if (copy_from_user(input, buf, len))
+        goto out_free_err;
+
+    /* Ugly and a nice way to extract both of the arguments \ 
+        one after one when each one is seperated with whitespace */
+    while ((src = strtok_km(input, " "))) {
+        dest = strtok_km(NULL, " "); break; }
+    kfree(input); /* We don't need the allocate buffer anymore */
+
+    /* Verify we extraced successfully */
+    if (src == NULL || dest == NULL)
+        return -EINVAL;
+
+    /* Trim the possible whitespaces */
+    src = strtok_km(src, "\r\t\n ");
+    dest = strtok_km(dest, "\r\t\n ");
+
+    /* Fetch the address of src */
+    if ((vkaddr = vp_fetch_addr(pid_mm, pid_task_struct, vps, src)) == 0)
+        return -EAGAIN;
+
+    /* Perform writing of dest to src */
+    if (vp_ow(pid_mm, vkaddr, dest, src) == 0)
+        return -EFAULT;
+
+    /* Finally increment RD/WR operations counter and return (: */
+    incrdwr();
+    return len;
+
+out_free_err:
+    kfree(input);
+    return -EFAULT;
+}
+
+/* This just verifes that the user didn't output an invalid PID */
+static inline int verify_module_args(void)
+{
+    if (PID <= 0 || PID > PID_MAX_LIMIT)
+        return 1;
+    return 0;
+}
+
+/* Copy the user-space program addresses into our struct's fields */
 static void vp_copy(struct mm_struct *mm, struct vp_sections_struct *vps)
 {
     spin_lock(&mm->arg_lock);
     vps->args.start_args = mm->arg_start;
     vps->args.end_args = mm->arg_end;
-    vps->data.start_data = mm->start_data;
-    vps->data.end_data = mm->end_data;
-    vps->text.start_text = mm->start_code;
-    vps->text.end_text = mm->end_code;
-    vps->env.start_env = mm->env_start;
-    vps->env.end_env = mm->env_end;
     spin_unlock(&mm->arg_lock);
 }
 
-static int __init init_mod(void) 
+static int __init init_mod(void)
 {
-    u64 vaddr;
-    struct vp_sections_struct vps;
-    struct mm_struct *pid_mm;
-    struct task_struct *pid_task_struct;
-    
-    if (PID <= 0 || PID > PID_MAX_LIMIT)
-        return -EINVAL;
-    if (!src || !dest)
+    if (verify_module_args())
         return -EINVAL;
     if (!(pid_task_struct = pid_task(find_vpid(PID), PIDTYPE_PID)))
-        return -EINVAL;
+        return -EAGAIN; /* Cannot find/attach process information by ID */
+    if ((pde = proc_mkdir("mwp", NULL)) == NULL)
+        return -EFAULT;
+    if (proc_create("mwpk", 0, pde, &mwp_proc_ops) == NULL)
+        return -EFAULT;
     
+    init_pinfo_struct();
     pid_mm = pid_task_struct->mm;
     vp_copy(pid_mm, &vps);
 
-    if ((vaddr = vp_fetch_addr(pid_mm, pid_task_struct, vps, src)) < 0)
-        return -EFAULT;
-    if (vp_ow(pid_mm, vaddr, src, dest) < 0) /* Finally, overwrite the memory */
-        return -EFAULT;
     return 0;
 }
 
 static void __exit exit_mod(void) 
 {
-    /* Nothing here, we can return error value in `init_mod` to make our life easier. */
+    proc_remove(pde);
 }
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Roi L");
-MODULE_VERSION("1.0.1");
+MODULE_VERSION("1.0.2");
 
 module_init(init_mod);
 module_exit(exit_mod);
