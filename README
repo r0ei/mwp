@@ -2,10 +2,10 @@ Mess with Process
 ========
 This simple module will overwrite memory of any C program process. This was tested on kernel version 5.13.0-52-generic, x86_64.
 
-mwp stands for "mess with process", and as for now (Version 1.0.1), we only support writing to the arguments section of the process, that is, 'argv'.
+mwp stands for "mess with process", we only support writing to the arguments section of the process, that is, 'argv', but with the huge loop we have when we loop through the memory, it is possible for you to also overwrite envp (Environment variables).
 
-You have to pass the PID of the process you want to write to when _insmod'ing_ the module, eg. _insmod mwp.ko PID=x_, as well as the "src" argument that will be the string in memory you _want to be overwritten_, and lastly, "dest", that will be the string to be _replaced_ with "src".
+You have to pass the PID of the process you want to write to when _insmod'ing_ the module, eg. _insmod mwp.ko PID=x_
 
-Let's say you _insmod mwp.ko PID=1000_ dest="Hi" src="./main", **if argv[0] (comm), that is _supposed_ to hold the name of the program, is called _./main_, "Hi" will be written to argv[0], eg. "Himain"**
+Let's say you want to overwrite argv[0], that is, _./main_, you simply do _echo "./main ./nomain" > /proc/mwp/mwpk_. This will overwrite the memory region or argv[0] with _./nomain_. You can test it with by using the _main.c_ file that is in _test_ (:
 
-Soon I will implement writing to env variables as well as to the data section, it might be hard, but I believe we might be able to do this.
+No features will be implemented, at least not soon. Enjoy what you have. I've learned a lot.
